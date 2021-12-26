@@ -1,0 +1,271 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Simple Single AZ Infrastructure
+
+Mappings:
+  StackConfig:
+    VPC:
+      CIDR: 10.0.0.0/16
+    PublicSubnet:
+      CIDR: 10.0.4.0/24
+    PrivateSubnet1:
+      CIDR: 10.0.5.0/24
+    PrivateSubnet2:
+      CIDR: 10.0.6.0/24
+    DBParameterGroup:
+      DBEngineFamily: mysql5.7
+
+Parameters:
+
+  EC2ImageId:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+    Description: Enter AMI Image Id
+
+  EC2InstanceType:
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t2.micro
+      - t2.small
+      - t3.small
+    Description: Select EC2 Instance Type
+
+  RDSInstanceType:
+    Type: String
+    Default: db.t2.micro
+    AllowedValues:
+      - db.t2.small
+      - db.t2.micro
+      - db.t3.small
+      - db.t3.micro
+    Description: Select RDS Instance Type
+
+  RDSPassword:
+    Type: String
+    NoEcho: true
+    MinLength: "1"
+    MaxLength: "12"
+    AllowedPattern: "^[a-zA-Z0-9]*$"
+    Description: Enter RDS User Password
+    ConstraintDescription: Input Parameter Must Match Pattern [A-Za-z0-9]*$, Between 1 And 12 Characters
+
+  RDSUserName:
+    Type: String
+    Description: Enter RDS UserName
+    MinLength: "4"
+    MaxLength: "12"
+    ConstraintDescription: Input Parameter Must Be Between 8 And 12 Characters
+
+  RDSDBName:
+    Type: String
+    Description: Enter RDS DB Name
+    MinLength: "1"
+    MaxLength: "12"
+    ConstraintDescription: Input Parameter Must Be Between 1 And 12 Characters
+
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Select EC2 Key Name to Allow SSH Access to The Instance
+
+  ProjectName:
+    Type: String
+    Description: Enter Project Name
+
+
+Resources:
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !FindInMap [ StackConfig, VPC, CIDR ]
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Ref ProjectName
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Ref ProjectName
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    DependsOn: AttachGateway
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-routetable
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+     Type: AWS::EC2::Subnet
+     DependsOn: AttachGateway
+     Properties:
+       VpcId: !Ref VPC
+       AvailabilityZone: !Select
+         - 0
+         - Fn::GetAZs: !Ref AWS::Region
+       CidrBlock: !FindInMap [ StackConfig, PublicSubnet, CIDR ]
+       MapPublicIpOnLaunch: true
+       Tags:
+         - Key: Name
+           Value: !Sub ${ProjectName}-public
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select
+        - 0
+        - Fn::GetAZs: !Ref AWS::Region
+      CidrBlock: !FindInMap [ StackConfig, PrivateSubnet1, CIDR ]
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-private1
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select
+        - 1
+        - Fn::GetAZs: !Ref AWS::Region
+      CidrBlock: !FindInMap [ StackConfig, PrivateSubnet2, CIDR ]
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-private2
+
+  SgWeb:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: Security Group For EC2
+      GroupName: !Sub ${ProjectName}-ec2-sg
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-ec2-sg
+
+  SgRds:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: Security Group For RDS
+      GroupName: !Sub ${ProjectName}-db-sg
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref SgWeb
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-db-sg
+
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref EC2ImageId
+      AvailabilityZone: !Select
+        - 0
+        - Fn::GetAZs: !Ref AWS::Region
+      InstanceType: !Ref EC2InstanceType
+      SecurityGroupIds:
+        - !Ref SgWeb
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: !Ref ProjectName
+      KeyName: !Ref KeyName
+
+  RDSSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub DB Subnet Group for ${ProjectName}
+      DBSubnetGroupName: !Sub ${ProjectName}-dsg
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-dsg
+
+  RDSParameterGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Description: !Sub DB Parameter Group for ${ProjectName}
+      Family: !FindInMap [ StackConfig, DBParameterGroup, DBEngineFamily ]
+      Parameters:
+        character_set_client: "utf8"
+        character_set_server: "utf8"
+        max_allowed_packet: "10000000"
+        explicit_defaults_for_timestamp: "1"
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-pg
+
+  RDSInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: "mysql"
+      EngineVersion: "5.7.31"
+      AllocatedStorage: "20"
+      AvailabilityZone: !Select
+        - 0
+        - Fn::GetAZs: !Ref AWS::Region
+      DBInstanceClass: !Ref RDSInstanceType
+      DBInstanceIdentifier: !Ref ProjectName
+      DBName: !Ref RDSDBName
+      DBParameterGroupName: !Ref RDSParameterGroup
+      DBSubnetGroupName: !Ref RDSSubnetGroup
+      VPCSecurityGroups:
+        - !Ref SgRds
+      MasterUsername: !Ref RDSUserName
+      MasterUserPassword: !Ref RDSPassword
+      Port: "3306"
+      Tags:
+        - Key: Name
+          Value: !Ref ProjectName
+    DependsOn: SgRds
+
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref EC2Instance
+      Tags:
+        - Key: Name
+          Value: !Ref ProjectName
